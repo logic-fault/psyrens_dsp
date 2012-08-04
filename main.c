@@ -51,6 +51,11 @@
 #include "register_dma.h"
 #include "i2s_bypass1.h"
 
+#define SAMPLE_RATE 44100
+#define SAMPLES_PER_UNIT int(0.01f * float(SAMPLE_RATE))
+#define BPS_CUTOFF 3
+#define BEAT_WINDOW_SECONDS 12
+#define RESOLUTION 4.0f // seconds, this is the longest time it can take for one beat
 
 #define SARCTRL *(ioport volatile unsigned *)0x7012
 #define SARDATA *(ioport volatile unsigned *)0x7014
@@ -71,6 +76,9 @@ Int32 data_data[1024];
 Int32 sound_bytes[16];
 Int32 sound_data_a[1024];
 Int32 sound_data_b[1024];
+
+unsigned int sub_sample = 0;
+unsigned int unit_sample = 0;
 
 unsigned int adc2, adc3;
 
@@ -124,17 +132,26 @@ interrupt void Bus_Isr(void)
 
 interrupt void DMA_Isr(void)
 {
-	if (sound_bank == BANK_A)
-	   sound_data_a[DMA_z] = sound_bytes[0];
-	else
-	   sound_data_b[DMA_z] = sound_bytes[0];   
-	DMA_z++;
-	if (DMA_z >= 1024)
+	static Uint32 square_sum = 0;
+	
+	// this is the indicator of the energy sample we have collected
+	sub_sample++;
+	
+	square_sum += (sound_bytes[0] >> 18) * (sound_bytes[0] >> 18);
+	
+	if (sub_sample => SAMPLES_PER_UNIT) // then save into the sound bank
 	{
-	   DMA_z = 0;
-	   sound_bank = (sound_bank == BANK_A) ? BANK_B : BANK_A;
-	   sound_data_ready = 1;
+		sub_sample = 0;
+		sound_data_a[unit_sample] = square_sum;
+		square_sum = 0;
+		unit_sample++;
+		if (unit_sample * SAMPLES_PER_UNIT / SAMPLE_RATE >= BEAT_WINDOW_SECONDS)
+		{
+			unit_sample = 0;
+			// time to process autocorrelation of the beat frame that is BEAT_WINDOW_SECONDS long, should take about 1 ms
+		}
 	}
+	
 	DMA_IFR = 0xFFFF;
 	asm(" BCLR INTM"); // Enable interrupts
 	return;
