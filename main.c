@@ -54,7 +54,7 @@
 #define SAMPLE_RATE 44100
 #define SAMPLES_PER_UNIT int(0.01f * float(SAMPLE_RATE))
 #define BPS_CUTOFF 3
-#define BEAT_WINDOW_SECONDS 12
+#define BEAT_WINDOW_UNITS 1024 
 #define RESOLUTION 4.0f // seconds, this is the longest time it can take for one beat
 
 #define SARCTRL *(ioport volatile unsigned *)0x7012
@@ -84,6 +84,9 @@ unsigned int adc2, adc3;
 
 typedef enum { BANK_A, BANK_B } sound_bank_t;
 
+volatile int led_enabled = 0;
+volatile static int global_frame_num;
+volatile static int global_beat_offset, global_beat_period;
 volatile static int sound_data_ready = 0;
 volatile static sound_bank_t sound_bank = BANK_A;
 
@@ -94,7 +97,11 @@ Int32 data_br_data[1024];  // need to align this!
 Int32 scratch_data[1024];
 Int32 result_data[1024];
 
+void corellation_mag_1024(Int32 * in, Uint32 * result_mag);
 void fft_mag_1024( Int32 * input, Uint32 * result_mag);
+
+void turnOnLED(void);
+void turnOffLED(void);
 
 void SYS_GlobalIntEnable(void)
 {
@@ -137,17 +144,30 @@ interrupt void DMA_Isr(void)
 	// this is the indicator of the energy sample we have collected
 	sub_sample++;
 	
-	square_sum += (sound_bytes[0] >> 18) * (sound_bytes[0] >> 18);
 	
-	if (sub_sample => SAMPLES_PER_UNIT) // then save into the sound bank
-	{
+	
+	square_sum += (sound_bytes[0] >> 20) * (sound_bytes[0] >> 20); // originally 31 bits of info (sign lost in squaring), shift 20 gives 11, means 22 bits space
+	                                                               // then, we may add this 1024 time with means we need 10 more bits for addition space
+	
+	if (sub_sample >= 441 ) // then save into the sound bank
+	{   
+        led_enabled = 0;
+        if ( global_frame_num == global_beat_offset)
+            led_enabled = 1;
+     
+        global_frame_num++;
+        
+        if (global_frame_num >= global_beat_period)
+            global_frame_num = 0;
+         
 		sub_sample = 0;
 		sound_data_a[unit_sample] = square_sum;
 		square_sum = 0;
 		unit_sample++;
-		if (unit_sample * SAMPLES_PER_UNIT / SAMPLE_RATE >= BEAT_WINDOW_SECONDS)
+		if (unit_sample >= BEAT_WINDOW_UNITS)
 		{
 			unit_sample = 0;
+			sound_data_ready = 1;
 			// time to process autocorrelation of the beat frame that is BEAT_WINDOW_SECONDS long, should take about 1 ms
 		}
 	}
@@ -289,9 +309,14 @@ void turnOffLED(void)
 void main(void)
 {
 	Int32 * sound_data_ptr;
+	float beat_s;
+	int   beat_n;
+	int   beat_offset;
+	Uint32 beat_mag;
 	
 	int led_count = 0;
 	int i = 0;
+	int j = 0;
 	
 	// initialization of periph / DSP
 	InitSystem();
@@ -376,14 +401,23 @@ void main(void)
 	
 	fft_mag_1024((Int32 *)data_data, (Uint32 *)result_data);
 	
+	// search for max between 1/10 s and 5 s
+	
+	
+	
 	
 	//setup codec via i2c
 	//setup i2s codec input
 	
-	ADC_init();
+	//ADC_init();
 	
    while(1)
    {
+   	
+   	if (led_enabled)
+   	   turnOnLED();
+   	else
+   	   turnOffLED();
    	
    // New audio sample available?
    // read i2s buffer for l & r channel 
@@ -400,36 +434,74 @@ void main(void)
    // use previous peak/mag pair data to determine if should send sig
    
       SYS_GlobalIntEnable();
+      turnOffLED();
       if (sound_data_ready)
       {
+      	
+      	// hack this for the first square of sig test
          if (sound_bank == BANK_A)
-    	    sound_data_ptr = sound_data_b;
+    	    sound_data_ptr = sound_data_a;
     	 else
     	    sound_data_ptr = sound_data_a;  
       	
       	// process fft of audio signal
       	for (i = 0; i < 1024; i++)
       	{
-      		data_data[i] = (sound_data_ptr[i] & 0xffff0000) >> 16;
+      		data_data[i] = (sound_data_ptr[i] & 0xfffff000) >> 12;
       	}
-        fft_mag_1024((Int32 *)data_data, (Uint32 *)result_data);
+        corellation_mag_1024((Int32 *)data_data, (Uint32 *)result_data);
         
-        if (led_count > 0)
-           led_count--;
-        else
-           turnOffLED();
-           
-        adc3 = get_ADC_ch(3); // max is 626
-        adc2 = get_ADC_ch(2);
-           
-        for (i = 3; i < 20; i++)
+        beat_n = 0;
+        beat_s = 0.0f;
+        beat_mag = 0;
+        
+        for (i = 10; i <500; i++)
         {
-        	if (result_data[i] > ((Int32)300000 * (Int32)adc3 / (Int32)626))
+        	if (result_data[i] > beat_mag)
         	{
-        	   led_count = 2;
-        	   turnOnLED();
+        		beat_mag = result_data[i];
+        	    beat_n = i;
         	}
         }
+        
+        beat_s = (float)beat_n / 54.00;
+        
+        // now we know how many frames a period is, find the beat offset
+        
+        
+        
+        for ( i = 0; i < beat_n; i++)
+        {
+        	sound_data_b[i] = 0;
+        }
+        
+        
+        for ( i = 0; i < (1024 / beat_n); i++)
+        {
+        	for (j = 0; j < beat_n; j++)
+        	{
+        		sound_data_b[j] += sound_data_ptr[1024 - beat_n * (i + 1) + j] >> 9;
+        	}
+        }
+        
+        
+        beat_mag = 0;
+        
+        for ( i = 0; i < beat_n; i++)
+        {
+        	if ( sound_data_b[i] > beat_mag)
+        	{
+        		beat_mag = sound_data_b[i];
+        		beat_offset = i;
+        	}
+        }
+        
+        // now we know beats in seconds
+        
+        
+        global_beat_offset = beat_offset;
+        global_beat_period = beat_n;
+        global_frame_num   = 0;
         
       	sound_data_ready = 0;
       }
@@ -437,6 +509,83 @@ void main(void)
    }
    
    return;
+}
+
+// input : array of 32 bit complex number (16 signed real, 16 signed imaginary)
+// output: unsigned int32 magnitude of autocorrelation, unscaled
+// comprises two 1024 point FFT, one 1024 point complex multipication
+void corellation_mag_1024(Int32 * in, Uint32 * result_mag)
+{
+	Int32 * data = in;
+	Int32 * data_br = (Int32 *)data_br_data;
+	Int32 * result = (Int32 *)result_data;
+	Int16 * complex_res;
+	Int16 * complex_conj;
+	Int32 * scratch = (Int32 *)scratch_data;
+	
+	Uint16 out_sel;
+	Uint16 fft_flag;
+	Uint16 scale_flag;
+	
+	int i;
+	
+	//SYS_GlobalIntDisable();
+	
+	fft_flag = FFT_FLAG;
+	scale_flag = SCALE_FLAG;
+	
+	/* Bit-Reverse 1024-point data, Store into data_br, data_br aligned to
+	12-least significant binary zeros */
+	hwafft_br(data, data_br, DATA_LEN_1024);
+	data = data_br;
+	
+	/* Compute 1024-point FFT, scaling disabled */
+	out_sel = hwafft_1024pts(data, scratch, fft_flag, scale_flag);
+	if (out_sel == OUT_SEL_DATA) {
+	   result = data;
+	} else {
+	   result = scratch;
+	}
+	
+	// take magnitude of FFT
+    complex_res = (Int16 *)result;
+    complex_conj = (Int16 *)result_mag;
+    
+    // result mag is complex conjugate of fft, result is original
+    
+	for (i = 0; i < 1024; i++)
+    { 
+    	complex_conj[i * 2]     = -1 * (complex_res[i * 2] >> 1) * (complex_res[i * 2] >> 1);
+    	complex_conj[i * 2 + 1] =  (complex_res[i * 2 + 1] >> 1) * (complex_res[i * 2 + 1] >> 1);
+    }
+    
+    data = in;
+    
+    for (i = 0; i < 1024; i++)
+    {
+    	data[i] = ((Uint32 *)result_mag)[i];
+    }
+    
+    hwafft_br(data, data_br, DATA_LEN_1024);
+	data = data_br;
+    
+    // bit reverse this data
+    
+	/* Compute 1024-point IFFT, scaling disabled */
+	out_sel = hwafft_1024pts(data, scratch, IFFT_FLAG, scale_flag);
+	if (out_sel == OUT_SEL_DATA) {
+	   result = data;
+	} else {
+	   result = scratch;
+	}
+    
+    complex_res = (Int16 *)result;
+    
+		for (i = 0; i < 1024; i++)
+    { 
+    	result_mag[i] = (Int32)complex_res[i * 2] * (Int32)complex_res[i * 2] + 
+    	            (Int32)complex_res[i * 2 + 1] * (Int32)complex_res[i * 2 + 1];
+    }
 }
 
 
