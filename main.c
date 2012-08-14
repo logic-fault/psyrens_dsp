@@ -310,6 +310,7 @@ void main(void)
 {
 	Int32 * sound_data_ptr;
 	float beat_s;
+	int beat_frames;
 	int   beat_n;
 	int   beat_offset;
 	Uint32 beat_mag;
@@ -475,8 +476,12 @@ void main(void)
         	sound_data_b[i] = 0;
         }
         
+        // don't go more than 10 frames back
+        beat_frames = 1024 / beat_n;
+        if (beat_frames > 10)
+           beat_frames = 10;
         
-        for ( i = 0; i < (1024 / beat_n); i++)
+        for ( i = 0; i < (beat_frames); i++)
         {
         	for (j = 0; j < beat_n; j++)
         	{
