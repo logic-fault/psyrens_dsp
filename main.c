@@ -146,13 +146,13 @@ interrupt void DMA_Isr(void)
 	
 	
 	
-	square_sum += (sound_bytes[0] >> 20) * (sound_bytes[0] >> 20); // originally 31 bits of info (sign lost in squaring), shift 20 gives 11, means 22 bits space
+	square_sum += (sound_bytes[0] >> 19) * (sound_bytes[0] >> 20); // originally 31 bits of info (sign lost in squaring), shift 20 gives 11, means 22 bits space
 	                                                               // then, we may add this 1024 time with means we need 10 more bits for addition space
 	
-	if (sub_sample >= 441 ) // then save into the sound bank
+	if (sub_sample >= 220 ) // then save into the sound bank
 	{   
         led_enabled = 0;
-        if ( global_frame_num == global_beat_offset)
+        if ( global_beat_offset > 0 && global_frame_num == global_beat_offset)
             led_enabled = 1;
      
         global_frame_num++;
@@ -435,7 +435,6 @@ void main(void)
    // use previous peak/mag pair data to determine if should send sig
    
       SYS_GlobalIntEnable();
-      turnOffLED();
       if (sound_data_ready)
       {
       	
@@ -456,7 +455,7 @@ void main(void)
         beat_s = 0.0f;
         beat_mag = 0;
         
-        for (i = 10; i <500; i++)
+        for (i = 20; i <500; i++)
         {
         	if (result_data[i] > beat_mag)
         	{
@@ -489,6 +488,8 @@ void main(void)
         	}
         }
         
+        if (beat_mag < 1000) // this was no good;
+           beat_offset = -1;
         
         beat_mag = 0;
         
@@ -507,6 +508,7 @@ void main(void)
         global_beat_offset = beat_offset;
         global_beat_period = beat_n;
         global_frame_num   = 0;
+        
         
       	sound_data_ready = 0;
       }
